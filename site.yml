@@ -1,0 +1,8 @@
+---
+- hosts: controller_staging
+  remote_user: heat-admin
+  become: yes
+  become_method: sudo
+
+  roles:
+    - elixir_federation

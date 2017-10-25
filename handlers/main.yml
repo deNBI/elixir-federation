@@ -1,0 +1,15 @@
+---
+# handlers file for elixir_federation
+- name: restart_shibboleth
+  service: name=shibd state=restarted
+  
+- name: restart_apache
+  service: name=httpd state=restarted
+  
+## handler for pcs resource restart if the haproxy configuration changed
+- name: pcs_resource_restart
+  command: /usr/sbin/pcs resource restart haproxy-clone
+  run_once: true
+  delegate_to: "{{ dc_hostname }}"
+  remote_user: heat-admin
+  

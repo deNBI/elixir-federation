@@ -1,0 +1,189 @@
+---
+###
+#
+# elixir_federation
+###
+
+- name: deploy shibboleth repository file
+  copy:
+    src: files/etc/yum.repos.d/shibboleth.repo
+    dest: /etc/yum.repos.d/shibboleth.repo
+    owner: root
+    group: root
+    mode: 0644
+
+- name: install shibboleth
+  yum:
+    state: present
+    name: shibboleth
+
+- name: replace apache shib.conf
+  copy:
+    src: files/etc/httpd/conf.d/shib.conf
+    dest: /etc/httpd/conf.d/shib.conf
+    owner: root
+    group: root
+    mode: 0644
+
+- name: copy shibboleth.xml
+  copy:
+    src: files/etc/shibboleth/shibboleth2.xml
+    dest: /etc/shibboleth/shibboleth2.xml
+
+- name: copy attribute-map.xml
+  copy:
+    src: files/etc/shibboleth/attribute-map.xml
+    dest: /etc/shibboleth/attribute-map.xml
+    
+- name: untar shibboleth key and cert
+  unarchive:
+    src: files/shibboleth.tgz
+    dest: /etc/shibboleth
+
+- name: restorecon -vR /etc
+  command: /sbin/restorecon -vR /etc
+  notify: restart_shibboleth
+
+- name: start shibboleth service
+  service:
+    enabled: true
+    state: started
+    name: shibd
+
+### keystone configuration starts here
+- name: modify ServerName in /etc/httpd/conf.d/10-keystone_wsgi_main.conf
+  lineinfile:
+    path: /etc/httpd/conf.d/10-keystone_wsgi_main.conf
+    regexp: '^  ServerName'
+    line: "  ServerName https://{{ public_cloud_name }}:13000"
+  notify: restart_apache
+
+- name: Add UseCanonicalName On
+  lineinfile:
+    path: /etc/httpd/conf.d/10-keystone_wsgi_main.conf
+    regexp: '^  ServerName'
+    insertafter: '  UseCanonicalName On'
+  notify: restart_apache
+
+- name: insert Shibboleth locations
+  blockinfile:
+    path: /etc/httpd/conf.d/10-keystone_wsgi_main.conf
+    insertbefore: '</VirtualHost>'
+    block: |
+      <Location /Shibboleth.sso>
+        SetHandler shib
+      </Location>
+      <Location /v3/OS-FEDERATION/identity_providers/elixir/protocols/mapped/auth>
+        ShibRequestSetting requireSession 1
+        AuthType shibboleth
+        ShibExportAssertion Off
+        Require valid-user
+      </Location>
+      <Location ~ "/v3/auth/OS-FEDERATION/websso/mapped">
+        AuthType shibboleth
+        Require valid-user
+        ShibRequestSetting requireSession 1
+        ShibRequireSession On
+        ShibExportAssertion Off
+      </Location>
+      <Location ~ "/v3/auth/OS-FEDERATION/identity_providers/elixir/protocols/mapped/websso">
+        AuthType shibboleth
+        Require valid-user
+      </Location>
+      WSGIScriptAliasMatch ^(/v3/OS-FEDERATION/identity_providers/.*?/protocols/.*?/auth)$/var/www/cgi-bin/keystone/keystone-public
+  notify: restart_apache
+
+- name: edit [auth] section in keystone.conf
+  lineinfile:
+    path: /etc/keystone/keystone.conf
+    regexp: '^methods = external,password,token,oauth1'
+    line: 'methods = external,password,token,mapped,oauth1'
+  notify: restart_apache
+
+- name: edit remote_id_attribute in [federation]
+  lineinfile:
+    path: /etc/keystone/keystone.conf
+    regexp: '^remote_id_attribute'
+    line: 'remote_id_attribute = Shib-Identity-Provider'
+  notify: restart_apache
+
+- name: edit trusted_dashboard in [federation]
+  lineinfile:
+    path: /etc/keystone/keystone.conf
+    regexp: '^trusted_dashboard'
+    line: "trusted_dashboard = https://{{ public_cloud_name }}/dashboard/auth/websso/"
+  notify: restart_apache
+
+- name: edit sso_callback_template in [federation]
+  lineinfile:
+    path: /etc/keystone/keystone.conf
+    regexp: '^#sso_callback_template ='
+    insertafer: 'sso_callback_template = /etc/keystone/sso_callback_template.html'
+  notify: restart_apache
+  
+- name: edit openstack-dashboard/local_settings SECURE_PROXY_SSL_HEADER
+  lineinfile:
+    path: /etc/openstack-dashboard/local_settings
+    regexp: '^#SECURE_PROXY_SSL_HEADER'
+    insertafter: "SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')"
+
+- name: edit openstack-dashboard/local_settings SECURE_PROXY_SSL_HEADER
+  lineinfile:
+    path: /etc/openstack-dashboard/local_settings OPENSTACK_KEYSTONE_URL
+    regexp: '^OPENSTACK_KEYSTONE_URL'
+    insertafter: 'OPENSTACK_KEYSTONE_URL = "https://{{ public_cloud_name }}:13000/v3"'
+
+- name: WEBSSO settings in /etc/openstack-dashboard/local_settings
+  blockinfile:
+    path: /etc/openstack-dashboard/local_settings
+    insertafter: '^#WEBSSO_ENABLED'
+    block: |
+      WEBSSO_ENABLED = True
+      WEBSSO_CHOICES = (
+        ("credentials", _("Keystone Credentials")),
+        ("mapped", _("ELIXIR")),
+      )
+      WEBSSO_INITIAL_CHOICE="mapped"
+
+### haproxy config
+- name: get designated coordinator
+  command: /usr/sbin/crm_mon -1
+  register: crm_mon_result
+
+- name: parse dc hostname  
+  set_fact: 
+    dc_hostname: "{{ crm_mon_result.stdout | regex_search(regexp, '\\1') | first }}"
+  vars:
+    regexp: 'Current DC\:\s([a-zA-Z0-9\-]*)' 
+
+- name: add line "cookie SERVERID insert indirect nocache"
+  lineinfile:
+    path: /etc/haproxy/haproxy.cfg
+    insertafter: '^listen keystone_public'
+    line: '  cookie SERVERID insert indirect nocache'
+  notify: pcs_resource_restart
+
+- name: add cookie to server line in keystone_public (controller-0)
+  lineinfile:
+    path: /etc/haproxy/haproxy.cfg
+    insertafter: '^listen keystone_public'
+    regexp: '^  server overcloud-controller-0'
+    line: '  server {{ contoller-0 }}.internalapi.localdomain cookie {{ contoller-0-ip }}:5000 check fall 5 inter 2000 rise 2'
+  notify: pcs_resource_restart
+
+- name: add cookie to server line in keystone_public (controller-1)
+  lineinfile:
+    path: /etc/haproxy/haproxy.cfg
+    insertafter: '^listen keystone_public'
+    regexp: '^  server overcloud-controller-1'
+    line: '  server {{ contoller-1 }}.internalapi.localdomain cookie {{ contoller-1-ip }}:5000 check fall 5 inter 2000 rise 2'
+  notify: pcs_resource_restart
+  
+- name: add cookie to server line in keystone_public (controller-2)
+  lineinfile:
+    path: /etc/haproxy/haproxy.cfg
+    insertafter: '^listen keystone_public'
+    regexp: '^  server overcloud-controller-1'
+    line: '  server {{ contoller-2 }}.internalapi.localdomain cookie {{ contoller-2-ip }}:5000 check fall 5 inter 2000 rise 2'
+  notify: pcs_resource_restart
+  
