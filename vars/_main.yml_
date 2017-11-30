@@ -1,0 +1,11 @@
+---
+public_cloud_name: denbi-cloud.bioquant.uni-heidelberg.de
+
+controller_0: overcloud-controller-0
+controller_0_ip: 172.x.x.x
+
+controller_1: overcloud-controller-1
+controller_1_ip: 172.x.x.x
+  
+controller_2: overcloud-controller-2
+controller_2_ip: 172.x.x.x

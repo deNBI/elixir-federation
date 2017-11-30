@@ -1,0 +1,16 @@
+---
+public_cloud_name: denbi-cloud-stage.bioquant.uni-heidelberg.de
+
+controller_0: overcloud-controller-0-stage
+controller_0_ip: 172.x.x.x
+
+controller_1: overcloud-controller-1-stage
+controller_1_ip: 172.x.x.x
+
+controller_2: overcloud-controller-2-stage
+controller_2_ip: 172.x.x.x
+
+hosts_entry_external_name: "172.x.x.x    cloud-stage.denbi.bioquant.uni-heidelberg.de    denbi-cloud-stage.bioquant.uni-heidelberg.de    # FQDN of the external VIP"
+
+shibtargz: shibboleth_staging.tgz
+shibxml: shibboleth2_staging.xml

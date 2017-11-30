@@ -1,8 +1,26 @@
 ---
-###
-#
+# @author: Mirko Schmidt (SVA)
+# @author: Martin Lang (Deutsches Krebsforschungszentrum)
+# @date: 2017-09-05
+# 
+# Ansible playbook to configure elixir federation in the staging environment
 # elixir_federation
-###
+#
+# Copyright 2017 Schmidt, Mirko (SVA GmbH)
+# Copyright 2017 Lang, Martin (Deutsches Krebsforschungszentrum)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 
 - name: deploy shibboleth repository file
   copy:
@@ -11,6 +29,12 @@
     owner: root
     group: root
     mode: 0644
+    
+- name: modify /etc/hosts to popularise the external name
+  lineinfile:
+    path: /etc/hosts
+    regexp: "# FQDN of the external VIP$"
+    line: "{{ hosts_entry_external_name }}"
 
 - name: install shibboleth
   yum:
@@ -24,25 +48,28 @@
     owner: root
     group: root
     mode: 0644
+  notify: restart_apache
 
 - name: copy shibboleth.xml
   copy:
-    src: files/etc/shibboleth/shibboleth2.xml
+    src: files/etc/shibboleth/{{ shibxml }}
     dest: /etc/shibboleth/shibboleth2.xml
+  notify: restart_shibboleth
 
 - name: copy attribute-map.xml
   copy:
     src: files/etc/shibboleth/attribute-map.xml
     dest: /etc/shibboleth/attribute-map.xml
-    
+  notify: restart_shibboleth
+
 - name: untar shibboleth key and cert
   unarchive:
-    src: files/shibboleth.tgz
+    src: files/{{ shibtargz }}
     dest: /etc/shibboleth
+  notify: restart_shibboleth
 
 - name: restorecon -vR /etc
   command: /sbin/restorecon -vR /etc
-  notify: restart_shibboleth
 
 - name: start shibboleth service
   service:
@@ -61,8 +88,8 @@
 - name: Add UseCanonicalName On
   lineinfile:
     path: /etc/httpd/conf.d/10-keystone_wsgi_main.conf
-    regexp: '^  ServerName'
-    insertafter: '  UseCanonicalName On'
+    insertafter: '^  ServerName'
+    line: '  UseCanonicalName On'
   notify: restart_apache
 
 - name: insert Shibboleth locations
@@ -73,30 +100,30 @@
       <Location /Shibboleth.sso>
         SetHandler shib
       </Location>
-      <Location /v3/OS-FEDERATION/identity_providers/elixir/protocols/mapped/auth>
+      <Location "/v3/OS-FEDERATION/identity_providers/elixir/protocols/mapped/auth">
         ShibRequestSetting requireSession 1
-        AuthType shibboleth
-        ShibExportAssertion Off
-        Require valid-user
+        AuthType shibboleth
+        ShibExportAssertion Off
+        Require valid-user
       </Location>
       <Location ~ "/v3/auth/OS-FEDERATION/websso/mapped">
-        AuthType shibboleth
-        Require valid-user
-        ShibRequestSetting requireSession 1
-        ShibRequireSession On
-        ShibExportAssertion Off
+        AuthType shibboleth
+        Require valid-user
+        ShibRequestSetting requireSession 1
+        ShibRequireSession On
+        ShibExportAssertion Off
       </Location>
       <Location ~ "/v3/auth/OS-FEDERATION/identity_providers/elixir/protocols/mapped/websso">
-        AuthType shibboleth
-        Require valid-user
+        AuthType shibboleth
+        Require valid-user
       </Location>
-      WSGIScriptAliasMatch ^(/v3/OS-FEDERATION/identity_providers/.*?/protocols/.*?/auth)$/var/www/cgi-bin/keystone/keystone-public
+      WSGIScriptAliasMatch ^(/v3/OS-FEDERATION/identity_providers/.*?/protocols/.*?/auth)$ /var/www/cgi-bin/keystone/keystone-public
   notify: restart_apache
 
 - name: edit [auth] section in keystone.conf
   lineinfile:
     path: /etc/keystone/keystone.conf
-    regexp: '^methods = external,password,token,oauth1'
+    regexp: '^methods = external,password'
     line: 'methods = external,password,token,mapped,oauth1'
   notify: restart_apache
 
@@ -117,21 +144,23 @@
 - name: edit sso_callback_template in [federation]
   lineinfile:
     path: /etc/keystone/keystone.conf
-    regexp: '^#sso_callback_template ='
-    insertafer: 'sso_callback_template = /etc/keystone/sso_callback_template.html'
+    insertafter: '^#sso_callback_template ='
+    line: 'sso_callback_template = /etc/keystone/sso_callback_template.html'
   notify: restart_apache
-  
-- name: edit openstack-dashboard/local_settings SECURE_PROXY_SSL_HEADER
-  lineinfile:
-    path: /etc/openstack-dashboard/local_settings
-    regexp: '^#SECURE_PROXY_SSL_HEADER'
-    insertafter: "SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')"
 
 - name: edit openstack-dashboard/local_settings SECURE_PROXY_SSL_HEADER
   lineinfile:
-    path: /etc/openstack-dashboard/local_settings OPENSTACK_KEYSTONE_URL
+    path: /etc/openstack-dashboard/local_settings
+    insertafter: '^#SECURE_PROXY_SSL_HEADER'
+    line: "SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')"
+  notify: restart_apache
+
+- name: edit openstack-dashboard/local_settings OPENSTACK_KEYSTONE_URL
+  lineinfile:
+    path: /etc/openstack-dashboard/local_settings
     regexp: '^OPENSTACK_KEYSTONE_URL'
-    insertafter: 'OPENSTACK_KEYSTONE_URL = "https://{{ public_cloud_name }}:13000/v3"'
+    line: 'OPENSTACK_KEYSTONE_URL = "https://{{ public_cloud_name }}:13000/v3"'
+  notify: restart_apache
 
 - name: WEBSSO settings in /etc/openstack-dashboard/local_settings
   blockinfile:
@@ -143,47 +172,50 @@
         ("credentials", _("Keystone Credentials")),
         ("mapped", _("ELIXIR")),
       )
-      WEBSSO_INITIAL_CHOICE="mapped"
+      WEBSSO_INITIAL_CHOICE="credentials"
+  notify: restart_apache
 
 ### haproxy config
 - name: get designated coordinator
   command: /usr/sbin/crm_mon -1
   register: crm_mon_result
 
-- name: parse dc hostname  
-  set_fact: 
+- name: parse dc hostname
+  set_fact:
     dc_hostname: "{{ crm_mon_result.stdout | regex_search(regexp, '\\1') | first }}"
   vars:
-    regexp: 'Current DC\:\s([a-zA-Z0-9\-]*)' 
+    regexp: 'Current DC\:\s([a-zA-Z0-9\-]*)'
 
 - name: add line "cookie SERVERID insert indirect nocache"
   lineinfile:
     path: /etc/haproxy/haproxy.cfg
-    insertafter: '^listen keystone_public'
-    line: '  cookie SERVERID insert indirect nocache'
+    insertbefore: '(server overcloud-controller-0.*):5000'
+    line: '  cookie SERVERID  insert  indirect  nocache'
   notify: pcs_resource_restart
 
 - name: add cookie to server line in keystone_public (controller-0)
   lineinfile:
     path: /etc/haproxy/haproxy.cfg
-    insertafter: '^listen keystone_public'
-    regexp: '^  server overcloud-controller-0'
-    line: '  server {{ contoller-0 }}.internalapi.localdomain cookie {{ contoller-0-ip }}:5000 check fall 5 inter 2000 rise 2'
+    regexp: 'server overcloud-controller-0.*5000'
+    line: "  server {{ controller_0 }}.internalapi.localdomain {{ controller_0_ip }}:5000 check cookie {{ controller_0 }} fall 5 inter 2000 rise 2"
   notify: pcs_resource_restart
 
 - name: add cookie to server line in keystone_public (controller-1)
   lineinfile:
     path: /etc/haproxy/haproxy.cfg
-    insertafter: '^listen keystone_public'
-    regexp: '^  server overcloud-controller-1'
-    line: '  server {{ contoller-1 }}.internalapi.localdomain cookie {{ contoller-1-ip }}:5000 check fall 5 inter 2000 rise 2'
+    regexp: 'server overcloud-controller-1.*5000'
+    line: "  server {{ controller_1 }}.internalapi.localdomain {{ controller_1_ip }}:5000 check cookie {{ controller_1 }} fall 5 inter 2000 rise 2"
   notify: pcs_resource_restart
-  
+
 - name: add cookie to server line in keystone_public (controller-2)
   lineinfile:
     path: /etc/haproxy/haproxy.cfg
-    insertafter: '^listen keystone_public'
-    regexp: '^  server overcloud-controller-1'
-    line: '  server {{ contoller-2 }}.internalapi.localdomain cookie {{ contoller-2-ip }}:5000 check fall 5 inter 2000 rise 2'
+    regexp: 'server overcloud-controller-2.*5000'
+    line: "  server {{ controller_2 }}.internalapi.localdomain {{ controller_2_ip }}:5000 check cookie {{ controller_2 }} fall 5 inter 2000 rise 2"
   notify: pcs_resource_restart
-  
+
+- name: remove shibboleth repository
+  file:
+    path: /etc/yum.repos.d/shibboleth.repo
+    state: absent
+    
