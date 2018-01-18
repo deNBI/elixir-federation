@@ -123,21 +123,21 @@
 - name: edit [auth] section in keystone.conf
   lineinfile:
     path: /etc/keystone/keystone.conf
-    regexp: '^methods = external,password'
+    insertafter: '^#methods = external,password'
     line: 'methods = external,password,token,mapped,oauth1'
   notify: restart_apache
 
 - name: edit remote_id_attribute in [federation]
   lineinfile:
     path: /etc/keystone/keystone.conf
-    regexp: '^remote_id_attribute'
+    insertafter: '^#remote_id_attribute'
     line: 'remote_id_attribute = Shib-Identity-Provider'
   notify: restart_apache
 
 - name: edit trusted_dashboard in [federation]
   lineinfile:
     path: /etc/keystone/keystone.conf
-    regexp: '^trusted_dashboard'
+    insertafter: '^#trusted_dashboard'
     line: "trusted_dashboard = https://{{ public_cloud_name }}/dashboard/auth/websso/"
   notify: restart_apache
 
